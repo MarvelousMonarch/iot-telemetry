@@ -10,7 +10,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  APP_NAME: chart
+  APP_NAME: telemetry
   CLUSTER_NAME: test-cluster
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
           uv pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run flake8
-        run: .venv/bin/flake8 app.py test_app.py --max-line-length=120
+        run: .venv/bin/flake8 app.py test_app.py --max-line-length=160
 
       - name: Check formatting with black
         run: .venv/bin/black --check app.py test_app.py

@@ -3,7 +3,7 @@
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
-  name: chart
+  name: iot-telemetry
   namespace: flux-system
 spec:
   interval: 30m
@@ -32,7 +32,7 @@ spec:
   targetNamespace: iot
   sourceRef:
     kind: GitRepository
-    name: telemetry
+    name: iot-telemetry
     namespace: flux-system
   wait: true
   interval: 1m

@@ -3,7 +3,7 @@
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: chart
+  name: iot-telemetry
 spec:
   interval: 30m
   chart:
@@ -26,7 +26,7 @@ spec:
     keepHistory: false
   values: # https://github.com/external-secrets/external-secrets/blob/main/deploy/charts/external-secrets/values.yaml
     image:
-      repository: "ghcr.io/dxas90/chart"
+      repository: "ghcr.io/MarvelousMonarch/iot-telemetry"
     env:
       variables:
         VARIABLES_THAT_SHOULD_BE_PRINTED: "LOG_LEVEL EVENT_THRESHOLD NODE_ENV PORT REDIS_DB REDIS_HOST REDIS_PORT STORAGE_DRIVER"

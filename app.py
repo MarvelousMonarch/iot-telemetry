@@ -274,12 +274,17 @@ def ingest_telemetry():
         required_fields = ["device_id", "temperature", "voltage"]
         for field in required_fields:
             if field not in data:
-                return jsonify({
-                    "error": True,
-                    "message": f"Missing required field: {field}",
-                    "statusCode": 400,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }), 400
+                return (
+                    jsonify(
+                        {
+                            "error": True,
+                            "message": f"Missing required field: {field}",
+                            "statusCode": 400,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ),
+                    400,
+                )
 
         # Create telemetry record
         telemetry_record = {
@@ -294,29 +299,46 @@ def ingest_telemetry():
         # Store in memory
         telemetry_data.append(telemetry_record)
 
-        logger.info(f"Telemetry ingested: device={telemetry_record['device_id']}, temp={telemetry_record['temperature']}°C, voltage={telemetry_record['voltage']}V")
+        logger.info(
+            f"Telemetry ingested: device={telemetry_record['device_id']}, temp={telemetry_record['temperature']}°C, voltage={telemetry_record['voltage']}V"
+        )
 
-        return jsonify({
-            "success": True,
-            "data": telemetry_record,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }), 201
+        return (
+            jsonify(
+                {
+                    "success": True,
+                    "data": telemetry_record,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            ),
+            201,
+        )
 
     except ValueError as e:
-        return jsonify({
-            "error": True,
-            "message": f"Invalid data format: {str(e)}",
-            "statusCode": 400,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }), 400
+        return (
+            jsonify(
+                {
+                    "error": True,
+                    "message": f"Invalid data format: {str(e)}",
+                    "statusCode": 400,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            ),
+            400,
+        )
     except Exception as e:
         logger.error(f"Error ingesting telemetry: {str(e)}")
-        return jsonify({
-            "error": True,
-            "message": "Internal server error",
-            "statusCode": 500,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }), 500
+        return (
+            jsonify(
+                {
+                    "error": True,
+                    "message": "Internal server error",
+                    "statusCode": 500,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            ),
+            500,
+        )
 
 
 # Route: GET Telemetry Data
@@ -337,14 +359,16 @@ def get_telemetry():
     if limit and limit > 0:
         filtered_data = filtered_data[-limit:]
 
-    return jsonify({
-        "success": True,
-        "data": {
-            "telemetry": filtered_data,
-            "total": len(filtered_data),
-        },
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+    return jsonify(
+        {
+            "success": True,
+            "data": {
+                "telemetry": filtered_data,
+                "total": len(filtered_data),
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 # Route: Echo (for testing POST requests)
