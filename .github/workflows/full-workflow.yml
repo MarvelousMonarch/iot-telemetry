@@ -1,0 +1,391 @@
+name: Docker Build and Security Scan
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  APP_NAME: chart
+  CLUSTER_NAME: test-cluster
+
+jobs:
+  lint:
+    name: Code Quality & Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv venv .venv
+          uv pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run flake8
+        run: .venv/bin/flake8 app.py test_app.py --max-line-length=120
+
+      - name: Check formatting with black
+        run: .venv/bin/black --check app.py test_app.py
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13', '3.14']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv venv .venv
+          uv pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        run: .venv/bin/pytest test_app.py -v --cov=app --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-python-${{ matrix.python-version }}
+
+  security-scan:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv venv .venv
+          uv pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run pip-audit
+        run: .venv/bin/pip-audit
+
+  helm-test:
+    name: Helm Chart Testing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      - name: Install Helm unittest plugin
+        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git
+        continue-on-error: true
+
+      - name: Run Helm unit tests
+        run: helm unittest k8s/chart --output-type JUnit --output-file helm-test-results.xml
+
+      - name: Publish Helm Test Results
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          files: helm-test-results.xml
+          check_name: Helm Unit Test Results
+
+      - name: Upload Helm Test Results
+        uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: helm-test-results
+          path: helm-test-results.xml
+
+      - name: Lint Helm chart
+        run: helm lint k8s/chart
+
+  build:
+    name: Build and Scan Docker Image
+    runs-on: ubuntu-latest
+    needs: [lint, test, helm-test]
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+      actions: read  # Required for CodeQL upload-sarif action
+      checks: write  # Required for publishing test results
+      pull-requests: write  # Required for PR comments
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+#            type=raw,value=RELEASE.{{date 'YYYY-MM-DDTHH-mm-ss'}}Z,enable=${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          target: production
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+
+      - name: Extract SHA tag for Trivy
+        if: github.event_name != 'pull_request'
+        id: extract-sha-tag
+        run: |
+          echo "sha-tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          echo "Found SHA tag: ${SHA_TAG}"
+
+      - name: Run Trivy vulnerability scanner
+        if: github.event_name != 'pull_request'  # only run Trivy when image is pushed (not on PRs)
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ steps.extract-sha-tag.outputs.sha-tag }}
+          format: 'sarif'
+          vuln-type: 'library'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        if: github.event_name != 'pull_request' && steps.trivy.outcome == 'success'
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+
+      - name: Setup Kind Cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ${{ env.CLUSTER_NAME }}
+          verbosity: 1
+          config: .github/kind-config.yaml
+
+      - name: Load Docker image into Kind
+        run: |
+          # Load image into Kind cluster
+          kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA::7} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Wait for cluster to be ready
+        run: |
+          echo "Waiting for nodes to be ready..."
+          kubectl wait --for=condition=Ready nodes --all --timeout=600s
+          echo "Cluster is ready!"
+
+      - name: Display cluster information
+        run: |
+          echo "=== Cluster Info ==="
+          kubectl cluster-info
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide
+          echo "=== Pods (all namespaces) ==="
+          kubectl get pods --all-namespaces -o wide
+          echo "=== Services (all namespaces) ==="
+          kubectl get services --all-namespaces -o wide
+
+      - name: Deploy application using Helm
+        run: |
+          echo "Deploying application with Helm..."
+
+          helm upgrade --install ${{ env.APP_NAME }} ./k8s/chart \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set image.tag=sha-${GITHUB_SHA::7} \
+            --set image.pullPolicy=Never \
+            --set replicaCount=1 \
+            --set autoscaling.enabled=false \
+            --set httproute.enabled=false \
+            -f .github/sample-env.yaml \
+            --wait \
+            --timeout 5m \
+            --debug
+
+          echo "=== Helm Release Status ==="
+          helm status ${{ env.APP_NAME }}
+
+          echo "=== Deployment Status ==="
+          kubectl get deployments
+          kubectl get pods -l app.kubernetes.io/name=chart
+          # If pods are not ready, describe and show logs to help debugging
+          NOT_READY=$(kubectl get pods -l app.kubernetes.io/instance=${{ env.APP_NAME }} --field-selector=status.phase!=Running --no-headers | wc -l || true)
+          if [ "$NOT_READY" -gt 0 ]; then
+            echo "Detected pods not running; printing descriptions and logs..."
+            kubectl describe pods -l app.kubernetes.io/instance=${{ env.APP_NAME }} || true
+            for pod in $(kubectl get pods -l app.kubernetes.io/instance=${{ env.APP_NAME }} -o jsonpath='{.items[*].metadata.name}'); do
+              echo "=== Logs for $pod ==="
+              kubectl logs $pod --all-containers=true || true
+            done
+          fi
+          kubectl get services
+
+      - name: Run Smoke Test
+        run: |
+          echo "Running quick smoke test..."
+          # NOTE: smoke-test.sh validates basic cluster health and deployment
+          # Runs AFTER Helm deployment completes successfully
+          chmod +x scripts/smoke-test.sh
+          ./scripts/smoke-test.sh
+
+      - name: Run Comprehensive E2E Tests
+        run: |
+          echo "Starting comprehensive end-to-end testing..."
+          # NOTE: e2e-test.sh performs full endpoint testing, pod resilience checks
+          # Requires Kind cluster with deployed application
+          chmod +x scripts/e2e-test.sh
+          ./scripts/e2e-test.sh
+
+      - name: Verify Deployment Health
+        run: |
+          echo "=== Final Deployment Health Check ==="
+          # Check for any unhealthy pods
+          UNHEALTHY_PODS=$(kubectl get pods --field-selector=status.phase!=Running --no-headers | wc -l)
+          if [ "$UNHEALTHY_PODS" -gt 0 ]; then
+            echo "Found unhealthy pods:"
+            kubectl get pods --field-selector=status.phase!=Running
+            exit 1
+          fi
+          echo "✅ All deployment health checks passed!"
+
+      - name: Collect Logs and Debug Info
+        if: failure()
+        run: |
+          echo "=== COLLECTING DEBUG INFORMATION ==="
+          echo "--- Cluster Information ---"
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+          echo "--- All Resources ---"
+          kubectl get all -o wide
+
+          echo "--- Pod Descriptions ---"
+          kubectl describe pods
+
+          echo "--- Pod Logs ---"
+          for pod in $(kubectl get pods -o name); do
+            echo "=== Logs for $pod ==="
+            kubectl logs $pod --all-containers=true || true
+          done
+
+          echo "--- Events ---"
+          kubectl get events --sort-by='.metadata.creationTimestamp'
+
+      - name: Cleanup
+        if: always()
+        run: |
+          echo "Cleaning up resources..."
+          helm uninstall ${{ env.APP_NAME }} --ignore-not-found || true
+
+  cleanup-packages:
+    name: Cleanup Old Package Versions
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    permissions:
+      packages: write
+    steps:
+      - name: Delete old package versions
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: 'chart'
+          package-type: 'container'
+          min-versions-to-keep: 20
+          delete-only-untagged-versions: "true"
+
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: http://api-stg-chart.example.com/healthz
+
+    steps:
+      - name: Trigger FluxCD reconcile for staging
+        if: success()
+        run: |
+          echo "Triggering FluxCD reconciliation for staging..."
+
+  deploy-production:
+    name: Deploy to Production Environment
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    # Environment protection rules can be configured in GitHub Settings > Environments > production
+    # to require manual approval before deployment
+    environment:
+      name: production
+      url: http://api-chart.example.com/healthz
+
+    steps:
+      - name: Trigger FluxCD reconcile for production
+        if: success()
+        run: |
+          echo "Triggering FluxCD reconciliation for production..."

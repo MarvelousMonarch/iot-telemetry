@@ -1,0 +1,134 @@
+replicaCount: 1
+
+image:
+  repository: "ghcr.io/dxas90/chart"
+  pullPolicy: "Always"
+  tag: "latest"
+
+service:
+  type: "ClusterIP"
+  port: 8000
+  annotations:
+    traefik.io/service.nativelb: "true"
+
+namespace: "default"
+
+httproute:
+  enabled: false
+  gatewayName: "external"
+  gatewayNamespace: "kube-system"
+  sectionName: "https"
+  annotations:
+    networking.x-k8s.io/route-shard: "example"
+    cert-manager.io/cluster-issuer: "letsencrypt-staging"
+    external-dns.alpha.kubernetes.io/target: "enter.example.com"
+  labels:
+    x-use-cloudflare-solver: "true"
+  hostnames:
+    - "example.local"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: traefik.io
+            kind: Middleware
+            name: secured-chain
+      backendRefs:
+        - port: 8000
+
+persistence:
+  enabled: false
+  capacity: "8Mi"
+  mountPath: "/data"
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+
+resources:
+  limits:
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 256Mi
+
+chart:
+  label: "chart"
+
+# Environment configuration as a secret
+env:
+  # Environment variables from file will be loaded here during chart generation
+  # if env_file_path is provided in cookiecutter.json
+  variables:
+    APP_ENV: "production"
+    TMPDIR: "/tmp"
+# Environment configuration as a config map
+extraEnv:
+    OTEL_EXPORTER_OTLP_ENDPOINT: "tempo.observability.svc.cluster.local:4317"
+# Common secret and settings references
+common:
+  secrets:
+    enabled: false
+    name: "common-secrets"
+  settings:
+    enabled: false
+    name: "common-settings"
+
+# Other values from the original chart are intentionally left as defaults.
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+podSecurityContext:
+  fsGroup: 65534
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+
+# Liveness probe: verify the process is healthy and responding to HTTP requests.
+# Increase initialDelaySeconds to avoid killing the container before Gunicorn is
+# fully started during image boot or with warmup tasks such as psutil compiling.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  failureThreshold: 6
+  timeoutSeconds: 5
+
+# Readiness probe: ensure the app returns a 200 on /healthz before traffic is routed.
+# Using HTTP GET makes sure the app is actually healthy (not only that TCP connects).
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  failureThreshold: 3
+  timeoutSeconds: 5
+# Volume mounts for nginx writable directories (required for readOnlyRootFilesystem)
+volumeMounts:
+  - name: app-cache
+    mountPath: /var/cache/app
+  - name: tmp
+    mountPath: /tmp
+# Volumes for nginx writable directories (emptyDir for temporary storage)
+volumes:
+  - name: app-cache
+    emptyDir: {}
+  - name: tmp
+    emptyDir: {}

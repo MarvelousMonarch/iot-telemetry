@@ -1,0 +1,8 @@
+apiVersion: v2
+name: "chart"
+description: "Helm chart chart"
+type: application
+version: "0.1.0"
+appVersion: "v0.1.0"
+maintainers:
+  - name: "Daniel Ramirez <dxas90@gmail.com>"

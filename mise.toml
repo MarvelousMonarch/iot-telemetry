@@ -1,0 +1,23 @@
+[tools]
+age = "latest"
+direnv = "latest"
+flux2 = "latest"
+kubectl = "latest"
+pipx = "latest"
+python = { version='3', virtualenv='.venv' }
+sops = "latest"
+task = "latest"
+uv = "latest"
+
+[settings]
+experimental = true
+python.uv_venv_auto = true
+
+[env]
+# Use the project name derived from the current directory
+PROJECT_NAME = "{{ config_root | basename }}"
+LC_ALL = "en_US.UTF-8"
+LC_CTYPE = "en_US.UTF-8"
+
+# Automatic virtualenv activation
+_.python.venv = { path = ".venv", create = true }
