@@ -6,7 +6,7 @@ labels:
   app.kubernetes.io/cluster: learn
   app.kubernetes.io/custom-part-of: learn
   app.kubernetes.io/managed-by: fluxcd
-  app.kubernetes.io/instance: chart
+  app.kubernetes.io/instance: iot-registry
   app.kubernetes.io/usage: iot
 fieldSpecs:
   - path: metadata/labels
